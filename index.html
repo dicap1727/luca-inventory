@@ -33,15 +33,36 @@ import {
   MapPin,
   Calendar,
   Box,
-  Filter
+  Filter,
+  LayoutGrid
 } from 'lucide-react';
 
-// --- Firebase 인프라 설정 (환경 변수 연동 가능) ---
-const firebaseConfig = JSON.parse(__firebase_config);
+// --- Firebase Infrastructure (Rule 1, 3 준수) ---
+// 환경 변수가 없을 경우를 대비한 안전한 초기화 로직
+const getFirebaseConfig = () => {
+  try {
+    if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+      return JSON.parse(__firebase_config);
+    }
+    // Vercel 배포 환경을 위한 Fallback (실제 배포 시 Vercel 환경 변수에 설정 필요)
+    return {
+      apiKey: import.meta.env?.VITE_FIREBASE_API_KEY || "",
+      authDomain: import.meta.env?.VITE_FIREBASE_AUTH_DOMAIN || "",
+      projectId: import.meta.env?.VITE_FIREBASE_PROJECT_ID || "",
+      storageBucket: import.meta.env?.VITE_FIREBASE_STORAGE_BUCKET || "",
+      messagingSenderId: import.meta.env?.VITE_FIREBASE_MESSAGING_SENDER_ID || "",
+      appId: import.meta.env?.VITE_FIREBASE_APP_ID || ""
+    };
+  } catch (e) {
+    return {};
+  }
+};
+
+const firebaseConfig = getFirebaseConfig();
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'luca-pims-deployment-final';
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'luca-pims-prod-v1';
 
 // --- 시스템 메타데이터 ---
 const CATEGORIES = ["전체", "시약", "소모품", "초자류", "안전용품", "기타"];
@@ -71,7 +92,7 @@ const App = () => {
     name: '', category: '시약', quantity: 0, minQuantity: 5, unit: 'ea', location: LOCATIONS[0] 
   });
 
-  // 1. 인증 프로토콜 (Rule 3 준수)
+  // 1. 인증 프로토콜 (Rule 3)
   useEffect(() => {
     const initAuth = async () => {
       try {
@@ -81,15 +102,20 @@ const App = () => {
           await signInAnonymously(auth);
         }
       } catch (err) {
-        console.error("Auth Fail:", err);
+        console.error("인증 시스템 부팅 실패:", err);
+        // 인증에 실패하더라도 화면은 띄우기 위해 로드 완료 처리
+        setIsLoaded(true);
       }
     };
     initAuth();
-    const unsubscribe = onAuthStateChanged(auth, setUser);
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      if (!u) setIsLoaded(true);
+    });
     return () => unsubscribe();
   }, []);
 
-  // 2. 실시간 클라우드 동기화 (Rule 1: 6 segments path)
+  // 2. 실시간 동기화 (Rule 1: 6 segments path)
   useEffect(() => {
     if (!user) return;
     setIsSyncing(true);
@@ -104,7 +130,7 @@ const App = () => {
       setIsSyncing(false);
       setIsLoaded(true);
     }, (error) => {
-      console.error("Sync Error:", error);
+      console.error("클라우드 통신 오류:", error);
       setIsSyncing(false);
       setIsLoaded(true);
     });
@@ -123,13 +149,12 @@ const App = () => {
         lastUpdated: new Date().toISOString()
       }, { merge: true });
     } catch (err) {
-      console.error("Save Error:", err);
+      console.error("데이터 저장 실패:", err);
     } finally {
       setIsSyncing(false);
     }
   };
 
-  // --- 로직 핸들러 ---
   const handleAddItem = () => {
     if (!newItem.name.trim()) return;
     const itemToAdd = { ...newItem, id: Date.now().toString(), updatedAt: new Date().toISOString() };
@@ -159,16 +184,24 @@ const App = () => {
     (item.name || '').toLowerCase().includes(searchTerm.toLowerCase()) && (selectedCategory === '전체' || item.category === selectedCategory)
   ), [inventory, searchTerm, selectedCategory]);
 
-  const lowStockCount = inventory.filter(item => (item.quantity || 0) <= (item.minQuantity || 0)).length;
+  const stats = useMemo(() => {
+    const lowStockCount = inventory.filter(item => (item.quantity || 0) <= (item.minQuantity || 0)).length;
+    return {
+      total: String(inventory.length),
+      low: String(lowStockCount),
+      integrity: "99.9%",
+      events: String(logs.length)
+    };
+  }, [inventory, logs]);
 
   if (!isLoaded) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-slate-900 text-white font-mono">
-        <div className="relative mb-8">
-          <div className="size-20 border-2 border-blue-500/20 rounded-full border-t-blue-500 animate-spin"></div>
+        <div className="relative mb-8 text-center">
+          <div className="size-20 border-2 border-blue-500/20 rounded-full border-t-blue-500 animate-spin mx-auto"></div>
           <div className="absolute inset-0 flex items-center justify-center italic font-black text-blue-400">LUCA</div>
         </div>
-        <p className="text-[10px] tracking-[0.5em] opacity-40">PROTOCOL DEPLOYING...</p>
+        <p className="text-[10px] tracking-[0.5em] opacity-40 animate-pulse uppercase">Protocol Booting...</p>
       </div>
     );
   }
@@ -176,14 +209,14 @@ const App = () => {
   return (
     <div className="flex min-h-screen bg-[#F8FAFC] text-slate-900 font-sans dark:bg-slate-950 dark:text-slate-100 transition-colors duration-300">
       
-      {/* Sidebar: LUCA 재고관리 브랜딩 적용 */}
+      {/* Sidebar: LUCA 재고관리 브랜딩 */}
       <aside className="w-64 bg-slate-900 text-white hidden lg:flex flex-col sticky top-0 h-screen shadow-2xl z-50">
         <div className="p-8">
           <div className="flex items-center gap-4 mb-14 group">
-            <div className="bg-white p-2 rounded-2xl shadow-xl transition-transform group-hover:scale-110">
+            <div className="bg-white p-2 rounded-2xl shadow-xl transition-transform group-hover:scale-110 flex items-center justify-center">
                <Box size={26} className="text-blue-600" />
             </div>
-            <div className="flex flex-col">
+            <div className="flex flex-col text-left">
               <h1 className="font-black text-3xl tracking-tighter uppercase italic leading-none text-white">LUCA</h1>
               <span className="text-xs font-bold text-blue-500 tracking-tighter mt-1">재고관리</span>
             </div>
@@ -194,28 +227,31 @@ const App = () => {
               { id: 'dashboard', label: '대시보드', icon: LayoutDashboard },
               { id: 'inventory', label: '재고 목록', icon: Package },
               { id: 'history', label: '활동 로그', icon: History },
-            ].map((item) => (
-              <button
-                key={item.id}
-                onClick={() => setView(item.id)}
-                className={`w-full flex items-center gap-4 px-5 py-4 rounded-2xl text-sm font-bold transition-all ${
-                  view === item.id 
-                  ? 'bg-blue-600 text-white shadow-xl shadow-blue-600/30' 
-                  : 'text-slate-500 hover:text-white hover:bg-slate-800'
-                }`}
-              >
-                <item.icon size={18} /> {item.label}
-              </button>
-            ))}
+            ].map((item) => {
+              const Icon = item.icon;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => setView(item.id)}
+                  className={`w-full flex items-center gap-4 px-5 py-4 rounded-2xl text-sm font-bold transition-all ${
+                    view === item.id 
+                    ? 'bg-blue-600 text-white shadow-xl shadow-blue-600/30' 
+                    : 'text-slate-500 hover:text-white hover:bg-slate-800'
+                  }`}
+                >
+                  <Icon size={18} /> {item.label}
+                </button>
+              );
+            })}
           </nav>
         </div>
 
         <div className="mt-auto p-8 border-t border-slate-800/50 text-left">
           <div className="flex items-center gap-3 opacity-60">
             <ShieldCheck size={14} className="text-emerald-500" />
-            <span className="text-[10px] font-bold uppercase tracking-widest">Master Auth Active</span>
+            <span className="text-[10px] font-bold uppercase tracking-widest">Secure Node Active</span>
           </div>
-          <p className="text-[10px] font-mono text-slate-500 mt-1 truncate">ID: {user?.uid?.substring(0, 15)}</p>
+          <p className="text-[10px] font-mono text-slate-500 mt-1 truncate">ID: {user?.uid?.substring(0, 15) || 'Guest'}</p>
         </div>
       </aside>
 
@@ -223,10 +259,11 @@ const App = () => {
         <header className="flex flex-col md:flex-row md:items-center justify-between gap-8 mb-16 text-left">
           <div className="flex items-center gap-5">
              <div className="lg:hidden flex items-center gap-2 pr-5 border-r border-slate-200">
-                <h1 className="font-black text-2xl tracking-tighter uppercase italic text-blue-600">LUCA</h1>
+                <h1 className="font-black text-2xl tracking-tighter uppercase italic text-blue-600 leading-none">LUCA</h1>
+                <span className="text-[8px] font-bold text-blue-500 leading-none">재고관리</span>
              </div>
              <h2 className="text-4xl font-black tracking-tight flex items-center gap-4">
-                {view === 'dashboard' ? "Status" : view === 'inventory' ? "Items" : "Log"}
+                {view === 'dashboard' ? "Status" : view === 'inventory' ? "Inventory" : "Log"}
                 {isSyncing && <RefreshCw size={20} className="animate-spin text-blue-500" />}
              </h2>
           </div>
@@ -255,49 +292,53 @@ const App = () => {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-in fade-in slide-in-from-bottom-2 duration-500">
             <div className="lg:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-6">
               {[
-                { label: "전체 리소스", val: inventory.length, unit: "Resources", color: "text-blue-600", icon: Package },
-                { label: "재고 부족", val: lowStockCount, unit: "Critical", color: "text-amber-500", icon: AlertTriangle },
-                { label: "데이터 무결성", val: "99.9", unit: "%", color: "text-emerald-500", icon: ShieldCheck },
-                { label: "활동 지수", val: logs.length, unit: "Events", color: "text-indigo-500", icon: BarChart3 }
-              ].map((s, i) => (
-                <div key={i} className="p-8 bg-white dark:bg-slate-900 rounded-[32px] border border-slate-100 dark:border-slate-800 shadow-sm flex items-center gap-6 group hover:border-blue-100 transition-all">
-                  <div className="p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl group-hover:bg-blue-50 transition-colors">
-                    <s.icon size={28} className={s.color} />
+                { label: "전체 품목", val: stats.total, unit: "Resources", color: "text-blue-600", icon: Package },
+                { label: "재고 부족", val: stats.low, unit: "Critical", color: "text-amber-500", icon: AlertTriangle },
+                { label: "데이터 신뢰도", val: stats.integrity, unit: "Health", color: "text-emerald-500", icon: ShieldCheck },
+                { label: "활동 내역", val: stats.events, unit: "Logs", color: "text-indigo-500", icon: BarChart3 }
+              ].map((s, i) => {
+                const Icon = s.icon;
+                return (
+                  <div key={i} className="p-8 bg-white dark:bg-slate-900 rounded-[32px] border border-slate-100 dark:border-slate-800 shadow-sm flex items-center gap-6 group hover:border-blue-100 transition-all">
+                    <div className="p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl group-hover:bg-blue-50 transition-colors">
+                      <Icon size={28} className={s.color} />
+                    </div>
+                    <div className="text-left">
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">{s.label}</p>
+                      <p className="text-4xl font-black leading-none tracking-tighter">{s.val}<span className="text-xs font-normal text-slate-400 ml-1.5 uppercase tracking-normal">{s.unit}</span></p>
+                    </div>
                   </div>
-                  <div className="text-left">
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">{s.label}</p>
-                    <p className="text-4xl font-black leading-none tracking-tighter">{s.val}<span className="text-xs font-normal text-slate-400 ml-1.5 uppercase tracking-normal">{s.unit}</span></p>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             <div className="bg-slate-900 rounded-[40px] p-10 text-white relative overflow-hidden flex flex-col justify-between border border-slate-800 shadow-2xl text-left">
                <div className="absolute -top-20 -right-20 size-80 bg-blue-600/10 blur-[100px]"></div>
                <div className="relative z-10">
-                 <h3 className="font-black text-xl mb-10 flex items-center gap-3 text-blue-400 font-mono italic tracking-tighter uppercase">Cloud Pulse</h3>
+                 <h3 className="font-black text-xl mb-10 flex items-center gap-3 text-blue-400 tracking-tighter uppercase font-mono italic">Cloud Pulse</h3>
                  <div className="space-y-8">
                    {logs.slice(0, 3).map((l, i) => (
-                     <div key={i} className="flex gap-5">
-                       <div className={`mt-1.5 size-1.5 rounded-full flex-shrink-0 ${l.type === 'in' ? 'bg-emerald-500' : l.type === 'out' ? 'bg-blue-500' : 'bg-slate-500'}`}></div>
+                     <div key={i} className="flex gap-5 animate-in fade-in duration-300">
+                       <div className={`mt-1.5 size-1.5 rounded-full flex-shrink-0 ${l.type === 'in' ? 'bg-emerald-500' : 'bg-blue-500'}`}></div>
                        <div className="min-w-0">
                          <p className="text-sm font-bold truncate tracking-tight uppercase leading-tight">{l.itemName}</p>
                          <p className="text-[10px] text-slate-500 mt-1 uppercase font-mono tracking-tighter">
-                            {l.type === 'in' ? '입고' : l.type === 'out' ? '출고' : '등록'} — {new Date(l.timestamp).toLocaleTimeString()}
+                            {l.type === 'in' ? '입고' : l.type === 'out' ? '출고' : '신규'} — {new Date(l.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
                          </p>
                        </div>
                      </div>
                    ))}
+                   {logs.length === 0 && <p className="text-xs font-bold text-slate-500 opacity-50 uppercase tracking-widest py-10">System Ready.</p>}
                  </div>
                </div>
-               <button onClick={() => setView('history')} className="mt-10 w-full py-4 bg-white/5 border border-white/10 rounded-2xl text-[10px] font-black uppercase tracking-[0.3em] hover:bg-white/10 transition-colors">Show logs</button>
+               <button onClick={() => setView('history')} className="mt-10 w-full py-4 bg-white/5 border border-white/10 rounded-2xl text-[10px] font-black uppercase tracking-[0.3em] hover:bg-white/10 transition-colors">Audit stream</button>
             </div>
           </div>
         )}
 
         {view === 'inventory' && (
           <div className="bg-white dark:bg-slate-900 rounded-[40px] border border-slate-100 dark:border-slate-800 shadow-sm overflow-hidden animate-in fade-in duration-500 text-left">
-            <div className="p-8 border-b border-slate-50 dark:border-slate-800 flex flex-wrap items-center gap-2">
+            <div className="p-8 border-b border-slate-50 dark:border-slate-800 flex flex-wrap gap-2 items-center">
               <Filter size={16} className="text-slate-300 mr-2" />
               {CATEGORIES.map(cat => (
                 <button key={cat} onClick={() => setSelectedCategory(cat)} className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all ${selectedCategory === cat ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20' : 'bg-slate-50 dark:bg-slate-800 text-slate-500 hover:bg-slate-100'}`}>
@@ -309,9 +350,9 @@ const App = () => {
               <table className="w-full text-left">
                 <thead>
                   <tr>
-                    <th className="px-6 py-6 text-[10px] font-bold text-slate-400 uppercase tracking-widest font-mono">Resource & Location</th>
-                    <th className="px-6 py-6 text-[10px] font-bold text-slate-400 uppercase tracking-widest font-mono text-center">Control</th>
-                    <th className="px-6 py-6 text-[10px] font-bold text-slate-400 uppercase tracking-widest font-mono text-right">Delete</th>
+                    <th className="px-6 py-6 text-[10px] font-bold text-slate-400 uppercase tracking-widest font-mono">Resource & Locale</th>
+                    <th className="px-6 py-6 text-[10px] font-bold text-slate-400 uppercase tracking-widest font-mono text-center">Quantity Control</th>
+                    <th className="px-6 py-6 text-[10px] font-bold text-slate-400 uppercase tracking-widest font-mono text-right">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-50 dark:divide-slate-800">
@@ -319,12 +360,12 @@ const App = () => {
                     <tr key={item.id} className="group hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
                       <td className="px-6 py-6">
                         <div className="flex items-center gap-5">
-                          <div className="size-12 bg-slate-50 dark:bg-slate-800 rounded-2xl flex items-center justify-center text-slate-400 transition-all group-hover:text-blue-500">
+                          <div className="size-12 bg-slate-50 dark:bg-slate-800 rounded-2xl flex items-center justify-center text-slate-400 transition-all group-hover:text-blue-500 group-hover:rotate-3">
                             <Tag size={20} />
                           </div>
                           <div>
-                            <p className="text-base font-black tracking-tight">{item.name}</p>
-                            <div className="flex items-center gap-2 mt-1.5">
+                            <p className="text-base font-black tracking-tight leading-none mb-1">{item.name}</p>
+                            <div className="flex items-center gap-2">
                               <span className="text-[9px] font-black bg-blue-50 dark:bg-blue-900/20 text-blue-600 px-2.5 py-1 rounded-lg uppercase font-mono">{item.category}</span>
                               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter flex items-center gap-1">
                                 <MapPin size={10} /> {item.location}
@@ -334,10 +375,10 @@ const App = () => {
                         </div>
                       </td>
                       <td className="px-6 py-6 text-center">
-                        <div className="inline-flex items-center gap-4 bg-slate-50 dark:bg-slate-800/50 p-2 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-inner w-36 justify-between">
-                          <button onClick={() => handleAdjustQuantity(item.id, -1)} className="p-2 hover:bg-white dark:hover:bg-slate-700 rounded-xl text-slate-400 shadow-sm transition-all"><ChevronDown size={18}/></button>
-                          <span className="text-xl font-black font-mono">{item.quantity}</span>
-                          <button onClick={() => handleAdjustQuantity(item.id, 1)} className="p-2 hover:bg-white dark:hover:bg-slate-700 rounded-xl text-slate-400 shadow-sm transition-all"><ChevronUp size={18}/></button>
+                        <div className="inline-flex items-center gap-4 bg-slate-50 dark:bg-slate-800/50 p-2 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-inner w-36 justify-between mx-auto">
+                          <button onClick={() => handleAdjustQuantity(item.id, -1)} className="p-2 hover:bg-white dark:hover:bg-slate-700 rounded-xl text-slate-400 shadow-sm active:scale-90 transition-all"><ChevronDown size={18}/></button>
+                          <span className="text-xl font-black font-mono leading-none">{item.quantity}</span>
+                          <button onClick={() => handleAdjustQuantity(item.id, 1)} className="p-2 hover:bg-white dark:hover:bg-slate-700 rounded-xl text-slate-400 shadow-sm active:scale-90 transition-all"><ChevronUp size={18}/></button>
                         </div>
                       </td>
                       <td className="px-6 py-6 text-right">
@@ -347,6 +388,14 @@ const App = () => {
                       </td>
                     </tr>
                   ))}
+                  {filteredInventory.length === 0 && (
+                    <tr>
+                      <td colSpan="3" className="py-24 text-center opacity-10">
+                        <LayoutGrid size={48} className="mx-auto mb-4" />
+                        <p className="font-bold uppercase tracking-widest text-xs italic">Database Empty</p>
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
@@ -357,20 +406,20 @@ const App = () => {
            <div className="max-w-3xl mx-auto space-y-6 text-left">
               <div className="flex items-center gap-4 px-4 mb-10">
                 <History className="text-blue-500" size={24}/>
-                <h3 className="text-2xl font-black tracking-tight">Activity Feed</h3>
+                <h3 className="text-2xl font-black tracking-tight">Audit Stream</h3>
               </div>
               <div className="space-y-4">
                 {logs.map((log, i) => (
-                  <div key={i} className="bg-white dark:bg-slate-900 p-6 rounded-[24px] border border-slate-100 dark:border-slate-800 shadow-sm flex items-center gap-10 group hover:border-blue-200 transition-all">
+                  <div key={i} className="bg-white dark:bg-slate-900 p-6 rounded-[24px] border border-slate-100 dark:border-slate-800 shadow-sm flex items-center gap-10 group hover:border-blue-200 transition-all animate-in slide-in-from-left-2 duration-300">
                     <div className="text-[11px] font-mono text-slate-400 w-24">
-                      {new Date(log.timestamp).toLocaleTimeString()}
+                      {new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </div>
                     <div className="flex-1">
                       <h4 className="text-sm font-bold tracking-tight">
                         {log.itemName} <span className="font-medium text-slate-400 mx-2">/</span> 
-                        {log.type === 'in' ? '입고' : log.type === 'out' ? '출고' : log.type === 'addition' ? '신규 등록' : '데이터 삭제'}
+                        {log.type === 'in' ? '리소스 입고' : log.type === 'out' ? '리소스 출고' : log.type === 'addition' ? '시스템 등록' : '영구 삭제'}
                       </h4>
-                      <p className="text-[10px] text-slate-500 mt-1 uppercase tracking-widest">{new Date(log.timestamp).toLocaleDateString()}</p>
+                      <p className="text-[10px] text-slate-500 mt-1 uppercase tracking-widest font-mono">{new Date(log.timestamp).toLocaleDateString()}</p>
                     </div>
                     {log.amount && <span className="text-blue-600 font-black font-mono text-lg">VAL: {log.amount}</span>}
                   </div>
@@ -397,7 +446,7 @@ const App = () => {
             <div className="space-y-6">
               <div>
                 <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 font-mono ml-1">Label Designation</label>
-                <input autoFocus type="text" value={newItem.name} onChange={e => setNewItem({...newItem, name: e.target.value})} placeholder="품목 명칭" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl p-5 text-sm font-semibold focus:ring-2 focus:ring-blue-500 outline-none shadow-inner" />
+                <input autoFocus type="text" value={newItem.name} onChange={e => setNewItem({...newItem, name: e.target.value})} placeholder="품목 명칭 입력" className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl p-5 text-sm font-semibold focus:ring-2 focus:ring-blue-500 outline-none shadow-inner" />
               </div>
 
               <div className="grid grid-cols-2 gap-5">
@@ -417,23 +466,39 @@ const App = () => {
 
               <div className="grid grid-cols-2 gap-5">
                 <div>
-                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 font-mono ml-1">Initial Quantity</label>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 font-mono ml-1">Quantity</label>
                   <input type="number" value={newItem.quantity} onChange={e => setNewItem({...newItem, quantity: Number(e.target.value)})} className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl p-5 text-sm outline-none font-mono font-bold" />
                 </div>
                 <div>
-                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 font-mono ml-1">Alert Threshold</label>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 font-mono ml-1">Alert Lv</label>
                   <input type="number" value={newItem.minQuantity} onChange={e => setNewItem({...newItem, minQuantity: Number(e.target.value)})} className="w-full bg-slate-50 dark:bg-slate-800 border-none rounded-2xl p-5 text-sm outline-none font-mono font-bold" />
                 </div>
               </div>
             </div>
 
             <div className="mt-12 flex gap-4">
-              <button onClick={() => setShowAddModal(false)} className="flex-1 py-5 rounded-2xl font-bold text-xs text-slate-500 bg-slate-50 dark:bg-slate-800 uppercase tracking-widest">Cancel</button>
-              <button onClick={handleAddItem} className="flex-[2] bg-blue-600 text-white py-5 rounded-2xl font-bold text-xs shadow-xl shadow-blue-600/30 active:scale-95 transition-all uppercase tracking-[0.2em]">Execute Entry</button>
+              <button onClick={() => setShowAddModal(false)} className="flex-1 py-5 rounded-2xl font-bold text-xs text-slate-500 bg-slate-50 dark:bg-slate-800 uppercase tracking-widest hover:bg-slate-100 transition-colors">Cancel</button>
+              <button onClick={handleAddItem} className="flex-[2] bg-blue-600 text-white py-5 rounded-2xl font-bold text-xs shadow-xl shadow-blue-600/30 active:scale-95 transition-all uppercase tracking-[0.2em]">Deploy Registry</button>
             </div>
           </div>
         </div>
       )}
+
+      {/* Mobile Nav Bar */}
+      <footer className="fixed bottom-0 left-0 right-0 h-20 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 lg:hidden flex items-center justify-around px-6 z-[90] shadow-2xl transition-all">
+         {[
+           { id: 'dashboard', icon: LayoutDashboard },
+           { id: 'inventory', icon: Package },
+           { id: 'history', icon: History },
+         ].map(item => {
+           const Icon = item.icon;
+           return (
+             <button key={item.id} onClick={() => setView(item.id)} className={`p-4 rounded-2xl transition-all ${view === item.id ? 'bg-blue-600 text-white shadow-xl' : 'text-slate-400'}`}>
+               <Icon size={24} />
+             </button>
+           );
+         })}
+      </footer>
 
     </div>
   );
